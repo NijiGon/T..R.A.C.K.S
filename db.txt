@@ -1,0 +1,23 @@
+CREATE TABLE trains (
+    Id INT AUTO_INCREMENT PRIMARY KEY,
+    baris INT,
+    gerbong VARCHAR(10),
+    jumlah_seat INT
+);
+
+INSERT INTO trains (gerbong, tempat, jumlah_seat) VALUES
+(1, '1', 25),
+(1, '2', 5),
+(1, '3', 0),
+(2, '4', 9),
+(2, '5', 5),
+(2, '6', 6),
+(3, '7', 0),
+(3, '8', 0),
+(3, '9', 8);
+
+//==============================
+
+UPDATE trains
+SET jumlah_seat = 0
+WHERE gerbong = 1;
