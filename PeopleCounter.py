@@ -1,12 +1,10 @@
 import cv2
 import mysql.connector
+from ultralytics import YOLO
 
-from centroid_tracker import CentroidTracker
-
-cv2.startWindowThread()
-
-# Create video capture object
-cap = cv2.VideoCapture("test.mp4")
+VIDEO_PATH = "test.mp4"
+PERSON_CLASS = 0  # COCO class id for "person"
+CONF_THRESHOLD = 0.3
 
 #Database connection
 GERBONG = 1 #(asumsi sebagai gerbong nomor 1)
@@ -36,64 +34,47 @@ fps = 75
 
 # Initialize variables
 count = 0
-line_pos = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) / 2) + 50
+prev_x = {}  # track ID -> horizontal centre in the previous frame
+model = YOLO("yolo11n.pt")
 
-# Create background subtractor object
-bgSubtractor = cv2.createBackgroundSubtractorMOG2()
-tracker = CentroidTracker(max_distance=250)
+# Detect people and track them across frames with ByteTrack
+results = model.track(
+    source=VIDEO_PATH,
+    stream=True,
+    classes=[PERSON_CLASS],
+    conf=CONF_THRESHOLD,
+    tracker="bytetrack.yaml",
+    persist=True,
+    verbose=False,
+)
 
-while True:
-    # Read frame from video capture
-    ret, frame = cap.read()
+for result in results:
+    frame = result.orig_img
+    line_pos = int(frame.shape[1] / 2) + 50
 
-    # Check if frame was successfully read
-    if not ret:
-        print("Error reading frame from video stream")
-        break
+    # Count a track once per line crossing, using its own previous position
+    if result.boxes.id is not None:
+        for track_id, (x1, y1, x2, y2) in zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()):
+            cx = (x1 + x2) / 2
+            if track_id in prev_x:
+                if cx < line_pos < prev_x[track_id]:
+                    count += 1
+                    update_seats(+1)
+                    print(f'track {track_id}: Left, count = {count}')
+                elif cx > line_pos > prev_x[track_id]:
+                    count -= 1
+                    update_seats(-1)
+                    print(f'track {track_id}: Right, count = {count}')
+            prev_x[track_id] = cx
 
-    # Convert frame to grayscale and apply Gaussian blur
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (115, 115), 0)
-
-    # Threshold the frame to create a binary image
-    _, thresh = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY_INV)
-
-    # Find contours in the binary image
-    contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Keep only large blobs
-    blobs = []
-    for contour in contours:
-        if 3000 < cv2.contourArea(contour):
-            M = cv2.moments(contour)
-            centroid = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
-            blobs.append((contour, centroid))
-
-    # Match blobs to tracks, so each person keeps the same ID across frames
-    tracks = tracker.update([centroid for _, centroid in blobs])
-
-    for (contour, _), track in zip(blobs, tracks):
-        centroid = track.centroid
-
-        # A track that crossed the line since the last frame changed the count
-        if track.prev is not None:
-            if centroid[0] < line_pos < track.prev[0]:
-                count += 1
-                update_seats(+1)
-                print(f'track {track.id}: Left, count = {count}')
-            elif centroid[0] > line_pos > track.prev[0]:
-                count -= 1
-                update_seats(-1)
-                print(f'track {track.id}: Right, count = {count}')
-
-        # Draw contour and centroid on frame
-        cv2.drawContours(frame, [contour], 0, (0, 255, 0), 2)
-        cv2.circle(frame, centroid, 5, (0, 0, 255), -1)
+            # Draw box and track ID on frame
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+            cv2.putText(frame, str(track_id), (int(x1), int(y1) - 5), font, 0.6, (0, 255, 0), 2)
 
     # Draw line in center of frame
-    cv2.line(frame, (line_pos, 0), (line_pos, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))), (0, 255, 255), 2)
+    cv2.line(frame, (line_pos, 0), (line_pos, frame.shape[0]), (0, 255, 255), 2)
 
-    # Draw count and direction text on frame
+    # Draw count text on frame
     cv2.putText(frame, f"Count: {count}", (50, 50), font, font_scale, font_color, line_type)
 
     # Show frame in window
@@ -103,6 +84,5 @@ while True:
     delay = 1000//fps
     if cv2.waitKey(delay) == ord('q'):
         break
-cap.release()
 cv2.destroyAllWindows()
 cv2.waitKey(1)
