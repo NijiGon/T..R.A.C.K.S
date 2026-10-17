@@ -15,7 +15,7 @@ from ultralytics import YOLO
 
 from krl import db
 from krl.config import load_settings
-from krl.counting import LEFT, RIGHT, LineCounter, duplicate_track_ids
+from krl.counting import LEFT, RIGHT, DuplicateFilter, LineCounter
 
 PERSON_CLASS = 0  # COCO class id for "person"
 FLUSH_EVERY_S = 5  # retry pending seat changes at least this often
@@ -54,6 +54,7 @@ def run(settings, debug_dir=None):
 
     cap = cv2.VideoCapture(settings.source)
     counter = None
+    duplicates = DuplicateFilter(settings.duplicate_iou)
     frame_no = 0
     net = 0  # net crossings since start, for logs and debug frames
     delay = 1
@@ -91,7 +92,7 @@ def run(settings, debug_dir=None):
             tracks = []
             if boxes.id is not None:
                 tracks = list(zip(boxes.id.int().tolist(), boxes.xyxy.tolist()))
-            ignored = duplicate_track_ids(tracks, settings.duplicate_iou)
+            ignored = duplicates.ignored(frame_no, tracks)
             observations = [(tid, (box[0] + box[2]) / 2) for tid, box in tracks if tid not in ignored]
 
             for track_id, direction in counter.update(frame_no, observations):

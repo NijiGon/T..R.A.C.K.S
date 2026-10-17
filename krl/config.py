@@ -40,7 +40,7 @@ def load_settings():
         gerbong=int(_get("KRL_GERBONG", "1")),
         seat_capacity=int(_get("KRL_SEAT_CAPACITY", "25")),
         line_position=float(_get("KRL_LINE_POSITION", "0.5")),
-        line_margin_px=int(_get("KRL_LINE_MARGIN_PX", "20")),
+        line_margin_px=int(_get("KRL_LINE_MARGIN_PX", "40")),
         seat_freed_direction=_get("KRL_SEAT_FREED_DIRECTION", "Left"),
         model_path=_get("KRL_MODEL", "yolo11n.pt"),
         conf_threshold=float(_get("KRL_CONF", "0.2")),

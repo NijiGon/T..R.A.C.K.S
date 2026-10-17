@@ -51,8 +51,12 @@ Run one counter per camera. Each camera sets `KRL_GERBONG` to the carriage it co
 ## Tests
 
 ```bash
-uv run pytest
+uv run pytest                      # unit tests, including simulated crossings
+uv run python -m tests.simulate    # accuracy sweep over harder simulated conditions
 ```
+
+`tests/simulate.py` generates people crossing a doorway with known ground truth and scores the counting logic.
+It is a stress test, not a substitute for labelled footage from the real camera.
 
 ## Calibrating for a camera
 

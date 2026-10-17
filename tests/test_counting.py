@@ -1,14 +1,14 @@
 import pytest
 
-from krl.counting import LEFT, RIGHT, LineCounter, box_iou, duplicate_track_ids
+from krl.counting import LEFT, RIGHT, DuplicateFilter, LineCounter, box_iou
 
 LINE = 300
 MARGIN = 20
 
 
-def run(observations_per_frame, line=LINE, margin=MARGIN):
+def run(observations_per_frame, line=LINE, margin=MARGIN, confirm_frames=1):
     """Feed one list of (track_id, cx) per frame and return all crossings in order."""
-    counter = LineCounter(line, margin)
+    counter = LineCounter(line, margin, confirm_frames=confirm_frames, max_jump_px=10**9)
     events = []
     for frame_no, observations in enumerate(observations_per_frame):
         events += [(frame_no, track_id, direction) for track_id, direction in counter.update(frame_no, observations)]
@@ -74,26 +74,88 @@ def test_box_iou_degenerate_box_does_not_divide_by_zero():
     assert box_iou((5, 5, 5, 5), (5, 5, 5, 5)) == 0.0
 
 
-def test_duplicate_is_the_newer_id_when_boxes_overlap():
-    tracks = [(201, (133, 166, 403, 512)), (203, (154, 152, 394, 732))]
-    assert duplicate_track_ids(tracks, 0.5) == {203}
+def moving_pair(shift_a, shift_b, frames=6, id_a=201, id_b=203):
+    """Two overlapping boxes that move by shift_a and shift_b pixels per frame."""
+    results = []
+    for f in range(frames):
+        a = (133 + shift_a * f, 166, 403 + shift_a * f, 512)
+        b = (154 + shift_b * f, 152, 394 + shift_b * f, 732)
+        results.append([(id_a, a), (id_b, b)])
+    return results
+
+
+def test_duplicate_is_the_newer_id_when_tracks_move_together():
+    dup = DuplicateFilter(iou_threshold=0.5)
+    ignored = set()
+    for frame_no, tracks in enumerate(moving_pair(shift_a=5, shift_b=5)):
+        ignored = dup.ignored(frame_no, tracks)
+    assert ignored == {203}
+
+
+def test_stationary_track_under_a_walker_is_not_a_duplicate():
+    # The walker (newer ID) moves across a stationary person's box: both must keep counting
+    dup = DuplicateFilter(iou_threshold=0.5)
+    ignored = set()
+    for frame_no, tracks in enumerate(moving_pair(shift_a=0, shift_b=8, id_a=1, id_b=2)):
+        ignored = dup.ignored(frame_no, tracks)
+    assert ignored == set()
 
 
 def test_separate_people_are_not_duplicates():
+    dup = DuplicateFilter(iou_threshold=0.5)
     tracks = [(1, (0, 0, 100, 200)), (2, (300, 0, 400, 200))]
-    assert duplicate_track_ids(tracks, 0.5) == set()
+    for frame_no in range(6):
+        assert dup.ignored(frame_no, tracks) == set()
 
 
 def test_duplicate_ignored_so_the_pair_counts_once():
-    # Track 2 is a duplicate of track 1 for the whole walk, so only track 1 may count
-    frames = [
-        [(1, (380, 0, 420, 100)), (2, (380, 0, 420, 100))],
-        [(1, (180, 0, 220, 100)), (2, (180, 0, 220, 100))],
-    ]
-    counter = LineCounter(LINE, MARGIN)
+    # Tracks 1 and 2 are identical boxes walking left together; only track 1 may count
+    counter = LineCounter(LINE, MARGIN, confirm_frames=1, max_jump_px=10**9)
+    dup = DuplicateFilter(iou_threshold=0.5)
     events = []
-    for frame_no, tracks in enumerate(frames):
-        duplicates = duplicate_track_ids(tracks, 0.5)
-        observations = [(tid, (box[0] + box[2]) / 2) for tid, box in tracks if tid not in duplicates]
+    for frame_no in range(10):
+        cx = 400 - 25 * frame_no
+        box = (cx - 30, 100, cx + 30, 300)
+        tracks = [(1, box), (2, box)]
+        duplicates = dup.ignored(frame_no, tracks)
+        observations = [(tid, (b[0] + b[2]) / 2) for tid, b in tracks if tid not in duplicates]
         events += counter.update(frame_no, observations)
     assert events == [(1, LEFT)]
+
+
+def test_id_switch_inside_the_dead_zone_keeps_the_crossing():
+    # Line at 300, dead zone 280..320. Track 1 is on the right, gets a new ID inside the dead zone,
+    # then the new track clears to the left
+    frames = [
+        [(1, 400)],
+        [(1, 310)],
+        [(2, 305)],
+        [(2, 290)],
+        [(2, 200)],
+    ]
+    assert run(frames) == [(4, 2, LEFT)]
+
+
+def test_new_track_far_from_any_lost_track_does_not_inherit_a_side():
+    frames = [
+        [(1, 600)],
+        [(2, 100)],
+    ]
+    assert run(frames) == []
+
+
+def test_one_frame_flicker_across_the_line_does_not_count():
+    # A stationary person's box jumps across the line for one frame, then returns
+    frames = [[(1, 400)], [(1, 200)], [(1, 400)], [(1, 400)], [(1, 400)]]
+    assert run(frames, confirm_frames=3) == []
+
+
+def test_crossing_counts_once_the_new_side_is_confirmed():
+    # Walker is confirmed on the right first, then is confirmed on the left on the third frame there
+    frames = [[(1, 400)], [(1, 400)], [(1, 400)], [(1, 200)], [(1, 190)], [(1, 180)], [(1, 170)]]
+    assert run(frames, confirm_frames=3) == [(5, 1, LEFT)]
+
+
+def test_two_frame_flicker_does_not_count():
+    frames = [[(1, 400)], [(1, 200)], [(1, 190)], [(1, 400)], [(1, 400)]]
+    assert run(frames, confirm_frames=3) == []
