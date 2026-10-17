@@ -4,7 +4,8 @@ from ultralytics import YOLO
 
 VIDEO_PATH = "test.mp4"
 PERSON_CLASS = 0  # COCO class id for "person"
-CONF_THRESHOLD = 0.3
+CONF_THRESHOLD = 0.2
+IMG_SIZE = 1024  # larger than the default 640 so small, distant people are detected
 
 #Database connection
 GERBONG = 1 #(asumsi sebagai gerbong nomor 1)
@@ -43,6 +44,7 @@ results = model.track(
     stream=True,
     classes=[PERSON_CLASS],
     conf=CONF_THRESHOLD,
+    imgsz=IMG_SIZE,
     tracker="bytetrack.yaml",
     persist=True,
     verbose=False,
