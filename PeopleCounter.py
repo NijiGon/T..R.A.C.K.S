@@ -6,6 +6,7 @@ VIDEO_PATH = "test.mp4"
 PERSON_CLASS = 0  # COCO class id for "person"
 CONF_THRESHOLD = 0.2
 IMG_SIZE = 1024  # larger than the default 640 so small, distant people are detected
+DUPLICATE_IOU = 0.5  # two tracks overlapping this much in one frame are one person
 
 #Database connection
 GERBONG = 1 #(asumsi sebagai gerbong nomor 1)
@@ -24,6 +25,25 @@ def update_seats(delta):
     query = "UPDATE trains SET jumlah_seat = GREATEST(0, LEAST(%s, jumlah_seat + %s)) WHERE gerbong = %s"
     cursor.execute(query, (SEAT_CAPACITY, delta, GERBONG))
     conn.commit()
+
+
+def box_iou(a, b):
+    # Intersection over union of two (x1, y1, x2, y2) boxes
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union
+
+
+def duplicate_track_ids(tracks):
+    # ByteTrack sometimes gives one person two IDs; keep the older ID and ignore the newer
+    duplicates = set()
+    for i, (id_a, box_a) in enumerate(tracks):
+        for id_b, box_b in tracks[i + 1:]:
+            if box_iou(box_a, box_b) >= DUPLICATE_IOU:
+                duplicates.add(max(id_a, id_b))
+    return duplicates
 
 
 # Define font settings for text overlay
@@ -54,11 +74,14 @@ for result in results:
     frame = result.orig_img
     line_pos = int(frame.shape[1] / 2) + 50
 
-    # Count a track once per line crossing, using its own previous position
     if result.boxes.id is not None:
-        for track_id, (x1, y1, x2, y2) in zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()):
+        tracks = [(track_id, box) for track_id, box in zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist())]
+        duplicates = duplicate_track_ids(tracks)
+
+        # Count a track once per line crossing, using its own previous position
+        for track_id, (x1, y1, x2, y2) in tracks:
             cx = (x1 + x2) / 2
-            if track_id in prev_x:
+            if track_id in prev_x and track_id not in duplicates:
                 if cx < line_pos < prev_x[track_id]:
                     count += 1
                     update_seats(+1)
