@@ -17,7 +17,7 @@ def _get(name, default):
 class Settings:
     # Database
     db_host: str
-    db_port: int
+    db_port: int  # PostgreSQL default is 5432
     db_user: str
     db_password: str
     db_name: str
@@ -40,8 +40,8 @@ class Settings:
 def load_settings():
     return Settings(
         db_host=_get("KRL_DB_HOST", "127.0.0.1"),
-        db_port=int(_get("KRL_DB_PORT", "3306")),
-        db_user=_get("KRL_DB_USER", "root"),
+        db_port=int(_get("KRL_DB_PORT", "5432")),
+        db_user=_get("KRL_DB_USER", "krl"),
         db_password=_get("KRL_DB_PASSWORD", ""),
         db_name=_get("KRL_DB_NAME", "krl"),
         source=_get("KRL_SOURCE", "data/test.mp4"),

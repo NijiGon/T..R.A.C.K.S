@@ -1,0 +1,20 @@
+[project]
+name = "krl-seat-availability"
+version = "0.1.0"
+description = "Counts passengers entering and leaving a KRL carriage and shows seat availability."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ultralytics>=8.4,<9",
+    "lap>=0.5",
+    "opencv-python-headless>=4.10",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy>=2.0,<3",
+    "alembic>=1.13",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

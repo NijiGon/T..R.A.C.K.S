@@ -1,4 +1,4 @@
-"""Database access for the seat counts. The schema is managed by Alembic (see migrations/)."""
+"""Database access for the seat counts (PostgreSQL). The schema is managed by Alembic (see migrations/)."""
 
 import logging
 
@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 def make_engine(settings):
     url = URL.create(
-        "mysql+pymysql",
+        "postgresql+psycopg",
         username=settings.db_user,
         password=settings.db_password,
         host=settings.db_host,

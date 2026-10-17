@@ -18,36 +18,39 @@ notebooks/       earlier prototypes, kept for reference
 
 ## Setup
 
-Requires Python 3.12, MySQL or MariaDB, and Tk for the display (`sudo apt install python3.12 python3.12-venv python3-tk`).
+You need [uv](https://docs.astral.sh/uv/), PostgreSQL 14+, and Tk for the display
+(`sudo apt install python3-tk` on Debian/Ubuntu).
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt   # includes requirements.txt and pytest
-
+uv sync                               # creates .venv with Python 3.12 and the locked dependencies
 cp .env.example .env                  # then set the database password and camera source
 ```
 
-Create the database and apply the schema:
-
-```sql
-CREATE DATABASE krl CHARACTER SET utf8mb4;
-CREATE USER 'krl'@'localhost' IDENTIFIED BY 'change-me';
-GRANT ALL ON krl.* TO 'krl'@'localhost';
-```
+Create the database user and database:
 
 ```bash
-alembic upgrade head
+sudo -u postgres psql -c "CREATE USER krl WITH PASSWORD 'change-me';"
+sudo -u postgres psql -c "CREATE DATABASE krl OWNER krl;"
 ```
 
-The first run of the counter downloads the YOLO weights (`yolo11n.pt`, about 6 MB) into the project directory.
+Apply the schema:
+
+```bash
+uv run alembic upgrade head
+```
+
+Model weights are handled by Ultralytics: on first use it downloads `KRL_MODEL` (default `yolo11n.pt`, about 6 MB)
+and caches it. Nothing in this project downloads or stores model files.
+
+Commands below use `uv run`, which runs inside the project environment without activating it.
+To activate it instead, run `source .venv/bin/activate`.
 
 ## Running
 
 ```bash
-python -m krl.counter                    # counts from KRL_SOURCE, writes to the database
-python -m krl.counter --debug-dir debug  # also saves a frame for each counted crossing
-python -m krl.display --fullscreen       # station screen; Escape leaves full screen
+uv run python -m krl.counter                    # counts from KRL_SOURCE, writes to the database
+uv run python -m krl.counter --debug-dir debug  # also saves a frame for each counted crossing
+uv run python -m krl.display --fullscreen       # station screen; Escape leaves full screen
 ```
 
 Run one counter per camera. Each camera sets `KRL_GERBONG` to the carriage it covers.
@@ -55,7 +58,7 @@ Run one counter per camera. Each camera sets `KRL_GERBONG` to the carriage it co
 ## Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ## Calibrating for a camera
