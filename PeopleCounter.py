@@ -1,14 +1,16 @@
 import cv2
 import mysql.connector
 
+from centroid_tracker import CentroidTracker
+
 cv2.startWindowThread()
 
 # Create video capture object
 cap = cv2.VideoCapture("test.mp4")
 
-#Database connection 
-Gerbong = 1 #(asumsi sebagai gerbong nomor 1)
-Capacity = 25 #(25 adalah asumsi awal jumlah tempat yg tersedia pada satu gerbong)
+#Database connection
+GERBONG = 1 #(asumsi sebagai gerbong nomor 1)
+SEAT_CAPACITY = 25 #(25 adalah asumsi awal jumlah tempat yg tersedia pada satu gerbong)
 conn = mysql.connector.connect(
     host="127.0.0.1",
     user="root",
@@ -17,12 +19,19 @@ conn = mysql.connector.connect(
 )
 cursor = conn.cursor()
 
+
+def update_seats(delta):
+    # Relative, clamped update: the database stays the source of truth
+    query = "UPDATE trains SET jumlah_seat = GREATEST(0, LEAST(%s, jumlah_seat + %s)) WHERE gerbong = %s"
+    cursor.execute(query, (SEAT_CAPACITY, delta, GERBONG))
+    conn.commit()
+
+
 # Define font settings for text overlay
 font = cv2.FONT_HERSHEY_SIMPLEX
 font_scale = 1
 font_color = (255,255,255)
 line_type = 2
-prev_contour_centroids = []
 fps = 75
 
 # Initialize variables
@@ -31,6 +40,7 @@ line_pos = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) / 2) + 50
 
 # Create background subtractor object
 bgSubtractor = cv2.createBackgroundSubtractorMOG2()
+tracker = CentroidTracker(max_distance=250)
 
 while True:
     # Read frame from video capture
@@ -51,81 +61,34 @@ while True:
     # Find contours in the binary image
     contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Process each contour
-    contour_objects = []
-    for i, contour in enumerate(contours):
-
-        # Find largest contour
+    # Keep only large blobs
+    blobs = []
+    for contour in contours:
         if 3000 < cv2.contourArea(contour):
             M = cv2.moments(contour)
             centroid = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+            blobs.append((contour, centroid))
 
-            # Find previous centroid and difference for this contour
-            prev_centroid = None
-            prev_dif = None
-            for c in prev_contour_centroids:
-                if c['index'] == i:
-                    prev_centroid = c['centroid']
-                    prev_dif = abs(prev_centroid[0] - centroid[0])
-                    break
+    # Match blobs to tracks, so each person keeps the same ID across frames
+    tracks = tracker.update([centroid for _, centroid in blobs])
 
-            # Check if current centroid is to the left or right of previous centroid
-            if prev_centroid is not None and prev_dif is not None:
-                if (centroid[0] < line_pos < prev_centroid[0]) and (prev_dif < 250):
-                    direction = "Left"
-                    count += 1
+    for (contour, _), track in zip(blobs, tracks):
+        centroid = track.centroid
 
-                    #Update Count to database
-                    query = "UPDATE trains SET jumlah_seat = %s WHERE gerbong = 1"
-                    Capacity += 1
-                    values = (Capacity,)
-                    cursor.execute(query, values)
-                    conn.commit()
+        # A track that crossed the line since the last frame changed the count
+        if track.prev is not None:
+            if centroid[0] < line_pos < track.prev[0]:
+                count += 1
+                update_seats(+1)
+                print(f'track {track.id}: Left, count = {count}')
+            elif centroid[0] > line_pos > track.prev[0]:
+                count -= 1
+                update_seats(-1)
+                print(f'track {track.id}: Right, count = {count}')
 
-                    print(f'centroids = {centroid[0]}, line pos = {line_pos}, prev centroids = {prev_centroid[0]}, count = {count}')
-                    print(contour_objects)
-                    print(prev_contour_centroids)
-                elif (centroid[0] > line_pos > prev_centroid[0]) and (prev_dif < 250):
-                    direction = "Right"
-                    count -= 1
-
-                    #Update Count to database
-                    query = "UPDATE trains SET jumlah_seat = %s WHERE gerbong = 1"
-                    Capacity -= 1
-                    values = (Capacity,)
-                    cursor.execute(query, values)
-                    conn.commit()
-
-                    print(f'centroids = {centroid[0]}, line pos = {line_pos}, prev centroids = {prev_centroid[0]}, count = {count}')
-                    print(contour_objects)
-                    print(prev_contour_centroids)
-                else:
-                    direction = None
-                
-            else:
-                direction = None
-
-            # Save current centroid and difference for this contour
-            contour_object = {
-                'index': i,
-                'centroid': centroid,
-                'prev_centroid': prev_centroid,
-                'prev_dif': prev_dif,
-                'direction': direction
-            }
-            contour_objects.append(contour_object)
-
-            # Draw contour and centroid on frame
-            cv2.drawContours(frame, [contour], 0, (0, 255, 0), 2)
-            cv2.circle(frame, centroid, 5, (0, 0, 255), -1)
-
-    # Update previous centroid list
-    prev_contour_centroids = []
-    for co in contour_objects:
-        prev_contour_centroids.append({
-            'index': co['index'],
-            'centroid': co['centroid']
-        })
+        # Draw contour and centroid on frame
+        cv2.drawContours(frame, [contour], 0, (0, 255, 0), 2)
+        cv2.circle(frame, centroid, 5, (0, 0, 255), -1)
 
     # Draw line in center of frame
     cv2.line(frame, (line_pos, 0), (line_pos, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))), (0, 255, 255), 2)
