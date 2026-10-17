@@ -15,12 +15,8 @@ def _get(name, default):
 
 @dataclass(frozen=True)
 class Settings:
-    # Database
-    db_host: str
-    db_port: int  # PostgreSQL default is 5432
-    db_user: str
-    db_password: str
-    db_name: str
+    # Database: a SQLite file
+    db_path: str
 
     # Camera and counting
     source: str  # video file path, or an RTSP/HTTP stream URL
@@ -39,11 +35,7 @@ class Settings:
 
 def load_settings():
     return Settings(
-        db_host=_get("KRL_DB_HOST", "127.0.0.1"),
-        db_port=int(_get("KRL_DB_PORT", "5432")),
-        db_user=_get("KRL_DB_USER", "krl"),
-        db_password=_get("KRL_DB_PASSWORD", ""),
-        db_name=_get("KRL_DB_NAME", "krl"),
+        db_path=_get("KRL_DB_PATH", "data/krl.db"),
         source=_get("KRL_SOURCE", "data/test.mp4"),
         gerbong=int(_get("KRL_GERBONG", "1")),
         seat_capacity=int(_get("KRL_SEAT_CAPACITY", "25")),

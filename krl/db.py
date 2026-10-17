@@ -1,25 +1,28 @@
-"""Database access for the seat counts (PostgreSQL). The schema is managed by Alembic (see migrations/)."""
+"""Seat counts in a SQLite file. The schema is managed by Alembic (see migrations/)."""
 
 import logging
+import os
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import SQLAlchemyError
 
 log = logging.getLogger(__name__)
 
 
 def make_engine(settings):
-    url = URL.create(
-        "postgresql+psycopg",
-        username=settings.db_user,
-        password=settings.db_password,
-        host=settings.db_host,
-        port=settings.db_port,
-        database=settings.db_name,
-    )
-    # pool_pre_ping drops dead connections after a database restart instead of failing the next query
-    return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
+    path = settings.db_path
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    engine = create_engine(f"sqlite:///{path}", connect_args={"timeout": 30})
+
+    @event.listens_for(engine, "connect")
+    def configure_connection(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        # WAL lets the display read while the counter writes; busy_timeout waits for the other writer
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+    return engine
 
 
 def read_seats(engine):
@@ -30,9 +33,13 @@ def read_seats(engine):
 
 
 def apply_seat_delta(engine, gerbong, delta, capacity):
-    # Relative, clamped update: the database is the source of truth and the count stays within 0..capacity
+    # Relative, clamped update: the database is the source of truth and the count stays within 0..capacity.
+    # CASE rather than GREATEST/LEAST, which SQLite does not have.
     query = text(
-        "UPDATE trains SET jumlah_seat = GREATEST(0, LEAST(:capacity, jumlah_seat + :delta)) "
+        "UPDATE trains SET jumlah_seat = CASE "
+        "WHEN jumlah_seat + :delta < 0 THEN 0 "
+        "WHEN jumlah_seat + :delta > :capacity THEN :capacity "
+        "ELSE jumlah_seat + :delta END "
         "WHERE gerbong = :gerbong"
     )
     with engine.begin() as conn:
@@ -42,7 +49,7 @@ def apply_seat_delta(engine, gerbong, delta, capacity):
 
 
 class SeatWriter:
-    """Sends seat changes to the database. If the database is unreachable, changes are kept and sent later."""
+    """Sends seat changes to the database. If the database is unavailable, changes are kept and sent later."""
 
     def __init__(self, apply):
         self._apply = apply  # callable(delta) that raises SQLAlchemyError when the database fails

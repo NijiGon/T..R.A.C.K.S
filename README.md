@@ -18,22 +18,15 @@ notebooks/       earlier prototypes, kept for reference
 
 ## Setup
 
-You need [uv](https://docs.astral.sh/uv/), PostgreSQL 14+, and Tk for the display
-(`sudo apt install python3-tk` on Debian/Ubuntu).
+You need [uv](https://docs.astral.sh/uv/) and Tk for the display (`sudo apt install python3-tk` on Debian/Ubuntu).
+The database is a SQLite file, so there is no database server to install.
 
 ```bash
 uv sync                               # creates .venv with Python 3.12 and the locked dependencies
-cp .env.example .env                  # then set the database password and camera source
+cp .env.example .env                  # then set the camera source and carriage
 ```
 
-Create the database user and database:
-
-```bash
-sudo -u postgres psql -c "CREATE USER krl WITH PASSWORD 'change-me';"
-sudo -u postgres psql -c "CREATE DATABASE krl OWNER krl;"
-```
-
-Apply the schema:
+Create the database file and apply the schema:
 
 ```bash
 uv run alembic upgrade head
@@ -76,6 +69,8 @@ Tune on footage from each camera, not on one clip. A setting that works for one 
 
 ## Known limits
 
+- The counter and the display must run on the same machine, since they share one SQLite file.
+  Sharing the file over a network drive is not supported.
 - Detection runs on people's full bodies, so a camera mounted high and angled down works best.
 - A person who leaves the view and comes back gets a new track ID and may be counted again or missed.
 - Counts start from the seat values in the database. Restart the board from a known state at the

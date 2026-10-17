@@ -7,7 +7,6 @@ dependencies = [
     "ultralytics>=8.4,<9",
     "lap>=0.5",
     "opencv-python-headless>=4.10",
-    "psycopg[binary]>=3.2",
     "sqlalchemy>=2.0,<3",
     "alembic>=1.13",
     "python-dotenv>=1.0",

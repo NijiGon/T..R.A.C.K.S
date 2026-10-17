@@ -5,3 +5,5 @@ __pycache__/
 .env
 *.pt
 debug/
+data/*.db
+data/*.db-*
