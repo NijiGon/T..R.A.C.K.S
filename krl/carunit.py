@@ -281,11 +281,13 @@ class CarPipeline:
         return self._trackers[name]
 
     def finished(self):
-        return all(reader.ended.is_set() for reader in self._readers.values())
+        return all(reader.ended for reader in self._readers.values())
 
     def close(self):
         for reader in self._readers.values():
             reader.stop()
+        for reader in self._readers.values():
+            reader._thread.join(timeout=2)
 
 
 class Detections:
