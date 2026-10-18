@@ -118,6 +118,27 @@ class LineCounter:
         self._prune(frame_no)
         return events
 
+    @classmethod
+    def for_fps(cls, line_x, margin, fps, confirm_s=0.3, max_speed_px_s=960.0, resync_s=0.33,
+                inherit_s=1.25, prune_s=12.5, inherit_px=120):
+        """Build a counter from durations and speeds, so behaviour does not depend on the frame rate.
+
+        `fps` is the rate of the frame indices passed to update(). The defaults are in seconds: 0.3 s to
+        confirm a side, and 960 px per second as the largest believable movement. tests/simulate.py was
+        tuned at 24 fps, where 3 frames is 0.125 s; 0.3 s is deliberately more conservative for slower
+        processing.
+        """
+        return cls(
+            line_x,
+            margin,
+            confirm_frames=max(1, round(confirm_s * fps)),
+            max_jump_px=max_speed_px_s / fps,
+            resync_frames=max(1, round(resync_s * fps)),
+            inherit_frames=max(1, round(inherit_s * fps)),
+            inherit_px=inherit_px,
+            prune_after=max(1, round(prune_s * fps)),
+        )
+
     def _clear_side(self, cx):
         if cx < self.line_x - self.margin:
             return LEFT
