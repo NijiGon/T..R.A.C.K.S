@@ -48,7 +48,7 @@ class CarConfig:
     model_path: str = "yolo11n.pt"
     imgsz: int = 640
     conf: float = 0.2
-    processed_fps: float = 10.0  # nominal rate of batched steps; sets the time base for counting and tracking
+    processed_fps: float = 10.0  # nominal rate of batched steps; sets how long the tracker keeps lost tracks
     track_buffer_s: float = 3.0  # how long a lost track is kept
     outbox_path: str = "data/car.db"
 
@@ -126,17 +126,19 @@ class FrameReader:
         self._lock = threading.Lock()
         self._frame = None
         self._seq = 0  # increases every time a new frame arrives
+        self._index = 0  # frame index on the source's timeline: a frame count for files, elapsed time for streams
+        self.fps = 15.0  # set once the source opens
         self._stop = threading.Event()
         self.ended = threading.Event()  # set when a video file runs out
         self._thread = threading.Thread(target=self._run, name=f"reader-{door.name}", daemon=True)
         self._thread.start()
 
     def latest(self, after_seq):
-        """Return (seq, frame) if a frame newer than `after_seq` has arrived, otherwise None."""
+        """Return (seq, index, frame) if a frame newer than `after_seq` has arrived, otherwise None."""
         with self._lock:
             if self._frame is None or self._seq <= after_seq:
                 return None
-            return self._seq, self._frame
+            return self._seq, self._index, self._frame
 
     def stop(self):
         self._stop.set()
@@ -144,7 +146,8 @@ class FrameReader:
     def _run(self):
         is_file = os.path.isfile(self.door.source)
         cap = cv2.VideoCapture(self.door.source)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
+        self.fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
+        started = time.monotonic()
         delay = 1
         while not self._stop.is_set():
             ok, frame = cap.read()
@@ -162,17 +165,19 @@ class FrameReader:
             with self._lock:
                 self._frame = frame
                 self._seq += 1
+                if is_file:
+                    self._index += 1  # a file's index is its frame count, so the timeline has no gaps
+                else:
+                    self._index = round((time.monotonic() - started) * self.fps)
             if is_file:
-                time.sleep(1 / fps)
+                time.sleep(1 / self.fps)
 
 
 class CarPipeline:
-    def __init__(self, config, outbox, model=None, clock=time.monotonic):
+    def __init__(self, config, outbox, model=None):
         self.config = config
         self.outbox = outbox
         self.model = model if model is not None else YOLO(config.model_path)
-        self.clock = clock
-        self._start = clock()
         self._readers = {door.name: FrameReader(door) for door in config.doors}
         self._last_seq = {door.name: 0 for door in config.doors}
         self._counters = {}
@@ -186,25 +191,24 @@ class CarPipeline:
         for name, reader in self._readers.items():
             latest = reader.latest(self._last_seq[name])
             if latest is not None:
-                seq, frame = latest
+                seq, index, frame = latest
                 self._last_seq[name] = seq
-                ready.append((name, frame))
+                ready.append((name, index, reader.fps, frame))
         if not ready:
             return 0
 
         results = self.model.predict(
-            [frame for _, frame in ready],
+            [frame for *_, frame in ready],
             imgsz=self.config.imgsz,
             conf=self.config.conf,
             classes=[PERSON_CLASS],
             verbose=False,
         )
-        index = round((self.clock() - self._start) * self.config.processed_fps)
-        for (name, frame), result in zip(ready, results):
-            self._process(name, frame, result, index)
+        for (name, index, fps, frame), result in zip(ready, results):
+            self._process(name, frame, result, index, fps)
         return len(ready)
 
-    def _process(self, name, frame, result, index):
+    def _process(self, name, frame, result, index, fps):
         boxes = result.boxes
         detections = Detections(
             conf=_to_numpy(boxes.conf),
@@ -215,7 +219,7 @@ class CarPipeline:
         tracks = [(int(row[4]), tuple(float(v) for v in row[:4])) for row in tracked]
 
         ignored = self._duplicates[name].ignored(index, tracks)
-        counter = self._counter(name, frame.shape[1])
+        counter = self._counter(name, frame.shape[1], fps)
         observations = [(tid, (box[0] + box[2]) / 2) for tid, box in tracks if tid not in ignored]
         for _track_id, direction in counter.update(index, observations):
             delta = 1 if direction == self.config.seat_freed_direction else -1
@@ -231,10 +235,10 @@ class CarPipeline:
             self.outbox.add(event)
             log.info("%s door %s: %s crossing, seat change %+d", self.config.car_id, name, direction, delta)
 
-    def _counter(self, name, frame_width):
+    def _counter(self, name, frame_width, fps):
         if name not in self._counters:
             line_x = self.config.line_position * frame_width
-            self._counters[name] = LineCounter.for_fps(line_x, self.config.margin_px, self.config.processed_fps)
+            self._counters[name] = LineCounter.for_fps(line_x, self.config.margin_px, fps)
         return self._counters[name]
 
     def _tracker(self, name):
@@ -279,9 +283,9 @@ def _to_numpy(value):
     return np.asarray(value)
 
 
-def run(config, clock=time.monotonic, step_wait_s=0.01):
+def run(config, step_wait_s=0.01):
     outbox = Outbox(config.outbox_path)
-    pipeline = CarPipeline(config, outbox, clock=clock)
+    pipeline = CarPipeline(config, outbox)
     log.info("Car %s started with %d door(s)", config.car_id, len(config.doors))
     try:
         while True:

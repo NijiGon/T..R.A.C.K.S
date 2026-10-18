@@ -65,8 +65,6 @@ def test_each_door_is_counted_separately_and_tagged(tmp_path):
     pipeline = CarPipeline.__new__(CarPipeline)
     pipeline.config = cfg
     pipeline.outbox = outbox
-    pipeline.clock = lambda: 0.0
-    pipeline._start = 0.0
     pipeline._counters = {}
     pipeline._trackers = {}
     from krl.counting import DuplicateFilter
@@ -75,8 +73,8 @@ def test_each_door_is_counted_separately_and_tagged(tmp_path):
 
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     for index, cx in enumerate(walker_centres):
-        pipeline._process("L1", frame, SimpleNamespace(boxes=FakeBoxes([person_at(cx)])), index)
-        pipeline._process("R1", frame, SimpleNamespace(boxes=FakeBoxes([person_at(480)])), index)
+        pipeline._process("L1", frame, SimpleNamespace(boxes=FakeBoxes([person_at(cx)])), index, 10.0)
+        pipeline._process("R1", frame, SimpleNamespace(boxes=FakeBoxes([person_at(480)])), index, 10.0)
 
     events = outbox.pending()
     assert [(e.door, e.direction, e.seat_delta) for e in events] == [("L1", LEFT, 1)]
