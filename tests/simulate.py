@@ -1,4 +1,7 @@
-"""Simulates people crossing a doorway with known ground truth, and scores the counting logic.
+"""Simulates people crossing a doorway from an overhead camera, with known ground truth, and scores the counting logic.
+
+People are top-down head boxes, about 40 to 52 px square, which is the geometry the project assumes: one
+overhead camera per door.
 
     uv run python tests/simulate.py
 
@@ -16,7 +19,7 @@ from krl.counting import DuplicateFilter, LineCounter
 
 LINE_X = 500
 DEEP = 60  # a true crossing counts once the person is this far past the line
-BOX_HALF_W, BOX_HALF_H = 30, 75
+HEAD_HALF_MIN, HEAD_HALF_MAX = 20, 26  # top-down head boxes are roughly square, about 40 to 52 px
 DUPLICATE_FRAMES = 15
 
 
@@ -43,6 +46,7 @@ class Person:
     start: int
     track_id: int
     distractor: bool = False
+    half: float = 23.0  # half the side of the head box
 
 
 def make_person(rng, pid, start, cond, next_track):
@@ -70,7 +74,8 @@ def make_person(rng, pid, start, cond, next_track):
             x -= side * speed
             path.append(x)
 
-    return Person(pid, path, rng.uniform(150, 500), start, next_track), next_track + 1
+    half = rng.uniform(HEAD_HALF_MIN, HEAD_HALF_MAX)
+    return Person(pid, path, rng.uniform(150, 500), start, next_track, half=half), next_track + 1
 
 
 def ground_truth(people):
@@ -89,7 +94,7 @@ def ground_truth(people):
 
 
 def simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px=120, confirm_frames=3,
-             max_jump_px=40, resync_frames=3, trace=None):
+             max_jump_px=40, resync_frames=3, trace=None, dup_history=5, dup_velocity_tol=2.0):
     rng = random.Random(seed)
     people, next_track, start = [], 1, 0
     for pid in range(cond.people):
@@ -99,7 +104,8 @@ def simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px=120, 
     duration = max(p.start + len(p.path) for p in people)
     for i in range(cond.distractors):
         x = rng.uniform(-30, 30)  # stands near the line but never crosses it
-        people.append(Person(cond.people + i, [x] * duration, rng.uniform(150, 500), 0, next_track, True))
+        people.append(Person(cond.people + i, [x] * duration, rng.uniform(150, 500), 0, next_track, True,
+                             rng.uniform(HEAD_HALF_MIN, HEAD_HALF_MAX)))
         next_track += 1
 
     truth = ground_truth(people)
@@ -107,7 +113,7 @@ def simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px=120, 
     counter = LineCounter(LINE_X, margin=margin, confirm_frames=confirm_frames, max_jump_px=max_jump_px,
                           resync_frames=resync_frames, inherit_frames=inherit_frames, inherit_px=inherit_px)
     predicted = []
-    duplicates = DuplicateFilter(duplicate_iou)
+    duplicates = DuplicateFilter(duplicate_iou, velocity_tol=dup_velocity_tol, history=dup_history)
     copies = {}  # duplicate track id -> (frames left, pid it copies)
     bursts = {}  # pid -> (frames left, offset) for a stationary person's box flicker
     last_frame = duration
@@ -133,7 +139,7 @@ def simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px=120, 
             if rng.random() < cond.miss_prob:
                 continue
             cx = LINE_X + x + rng.gauss(0, cond.noise_px)
-            box = (cx - BOX_HALF_W, person.y - BOX_HALF_H, cx + BOX_HALF_W, person.y + BOX_HALF_H)
+            box = (cx - person.half, person.y - person.half, cx + person.half, person.y + person.half)
             visible[person.pid] = (person.track_id, box)
             owner[person.track_id] = person.pid
             if rng.random() < cond.duplicate_prob:
@@ -179,12 +185,13 @@ def score(truth, predicted):
 
 
 def evaluate(cond, margin, inherit_frames, duplicate_iou, seeds=range(8), inherit_px=120, confirm_frames=3,
-             max_jump_px=40, resync_frames=3):
+             max_jump_px=40, resync_frames=3, dup_history=5, dup_velocity_tol=2.0):
     """Returns (accuracy, errors, true crossings) summed over the seeds."""
     total_truth = total_errors = 0
     for seed in seeds:
         truth, predicted = simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px, confirm_frames,
-                                    max_jump_px, resync_frames)
+                                    max_jump_px, resync_frames, dup_history=dup_history,
+                                    dup_velocity_tol=dup_velocity_tol)
         false_positives, false_negatives = score(truth, predicted)
         total_truth += len(truth)
         total_errors += false_positives + false_negatives
