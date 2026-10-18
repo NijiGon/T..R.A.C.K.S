@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import functools
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from ultralytics import YOLO
 from ultralytics.trackers.byte_tracker import BYTETracker
 
 from krl.counting import LEFT, RIGHT, DuplicateFilter, LineCounter
+from krl.sync import post_events, sync_forever, sync_once
 
 PERSON_CLASS = 0
 MAX_RECONNECT_DELAY_S = 30
@@ -49,6 +51,8 @@ class CarConfig:
     model_path: str = "yolo11n.pt"
     imgsz: int = 640
     conf: float = 0.2
+    ingest_url: str = ""  # central ingest endpoint, e.g. https://central.example/v1/events; empty = no sync
+    ingest_token: str = ""
     processed_fps: float = 10.0  # nominal rate of batched steps; sets how long the tracker keeps lost tracks
     track_buffer_s: float = 3.0  # how long a lost track is kept
     outbox_path: str = "data/car.db"
@@ -90,29 +94,34 @@ class Outbox:
             " sent INTEGER NOT NULL DEFAULT 0)"
         )
         self._conn.commit()
+        self._lock = threading.Lock()  # the pipeline and the sync thread share this connection
 
     def add(self, event):
-        self._conn.execute(
-            "INSERT OR IGNORE INTO outbox (event_id, car_id, door, occurred_at, direction, seat_delta) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (event.event_id, event.car_id, event.door, event.occurred_at, event.direction, event.seat_delta),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO outbox (event_id, car_id, door, occurred_at, direction, seat_delta) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (event.event_id, event.car_id, event.door, event.occurred_at, event.direction, event.seat_delta),
+            )
+            self._conn.commit()
 
     def pending(self, limit=500):
-        rows = self._conn.execute(
-            "SELECT event_id, car_id, door, occurred_at, direction, seat_delta FROM outbox "
-            "WHERE sent = 0 ORDER BY occurred_at LIMIT ?",
-            (limit,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT event_id, car_id, door, occurred_at, direction, seat_delta FROM outbox "
+                "WHERE sent = 0 ORDER BY occurred_at LIMIT ?",
+                (limit,),
+            ).fetchall()
         return [CrossingEvent(*row) for row in rows]
 
     def mark_sent(self, event_ids):
-        self._conn.executemany("UPDATE outbox SET sent = 1 WHERE event_id = ?", [(i,) for i in event_ids])
-        self._conn.commit()
+        with self._lock:
+            self._conn.executemany("UPDATE outbox SET sent = 1 WHERE event_id = ?", [(i,) for i in event_ids])
+            self._conn.commit()
 
     def close(self):
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
 
 class FrameReader:
@@ -314,6 +323,12 @@ def _to_numpy(value):
 def run(config, step_wait_s=0.01):
     outbox = Outbox(config.outbox_path)
     pipeline = CarPipeline(config, outbox)
+    stop_sync = threading.Event()
+    sync_thread = None
+    if config.ingest_url:
+        send = functools.partial(post_events, config.ingest_url, config.ingest_token, config.car_id)
+        sync_thread = threading.Thread(target=sync_forever, args=(outbox, send, stop_sync), daemon=True)
+        sync_thread.start()
     log.info("Car %s started with %d door(s)", config.car_id, len(config.doors))
     try:
         while True:
@@ -326,6 +341,11 @@ def run(config, step_wait_s=0.01):
         log.info("Stopped by user")
     finally:
         pipeline.close()
+        stop_sync.set()
+        if sync_thread is not None:
+            sync_thread.join(timeout=5)
+            sent, ok = sync_once(outbox, functools.partial(post_events, config.ingest_url, config.ingest_token, config.car_id))
+            log.info("Final sync sent %d event(s), all acknowledged: %s", sent, ok)
         outbox.close()
     log.info("Car %s finished, net seat change %+d", config.car_id, pipeline.net)
 

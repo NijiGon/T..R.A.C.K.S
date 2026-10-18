@@ -48,6 +48,20 @@ uv run python -m krl.display --fullscreen       # station screen; Escape leaves 
 
 Run one counter per camera. Each camera sets `KRL_GERBONG` to the carriage it covers.
 
+## Car unit and central (in progress)
+
+`krl/carunit.py` runs one process per train car. It reads all of that car's door cameras, runs one batched
+detection per step, and writes each crossing to a local SQLite outbox. A sync thread then sends pending events
+to central with `ingest_url` and `ingest_token` set in the car's JSON config.
+
+```bash
+uv run python -m krl.carunit car.json          # records and syncs events
+KRL_INGEST_TOKEN=... uv run uvicorn krl.central:app   # central ingest and occupancy API
+```
+
+Events carry UUIDs, so retries are safe: central stores each event once. Occupancy at central is the net
+seat change per door since the events began. Starting seat counts still come from the car's setup.
+
 ## Tests
 
 ```bash
