@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import os
+import queue
 import sqlite3
 import threading
 import time
@@ -115,46 +116,65 @@ class Outbox:
 
 
 class FrameReader:
-    """Keeps only the newest frame from one door's camera, so a slow step never builds a backlog.
+    """Hands frames from one door's camera to the pipeline.
 
-    Video files are read at their own frame rate, so they behave like a live camera. Streams that drop
-    are reopened with a growing delay.
+    Video files are replayed losslessly: every frame goes through a bounded queue, and the reader waits
+    when the pipeline is behind. Results for a file are then the same on every run.
+
+    Live streams keep only the newest frame, so a slow step never builds a backlog. Streams that drop are
+    reopened with a growing delay.
     """
+
+    QUEUE_SIZE = 8
 
     def __init__(self, door):
         self.door = door
+        self.lossless = os.path.isfile(door.source)
         self._lock = threading.Lock()
         self._frame = None
-        self._seq = 0  # increases every time a new frame arrives
+        self._seq = 0  # increases every time a new frame arrives on a live stream
+        self._taken = 0  # seq of the last frame handed to the pipeline
         self._index = 0  # frame index on the source's timeline: a frame count for files, elapsed time for streams
+        self._queue = queue.Queue(maxsize=self.QUEUE_SIZE)
         self.fps = 15.0  # set once the source opens
         self._stop = threading.Event()
-        self.ended = threading.Event()  # set when a video file runs out
+        self._eof = threading.Event()  # set when a video file has no frames left to read
         self._thread = threading.Thread(target=self._run, name=f"reader-{door.name}", daemon=True)
         self._thread.start()
 
-    def latest(self, after_seq):
-        """Return (seq, index, frame) if a frame newer than `after_seq` has arrived, otherwise None."""
-        with self._lock:
-            if self._frame is None or self._seq <= after_seq:
+    @property
+    def ended(self):
+        """True when a file has been read to the end and every frame has been taken."""
+        return self.lossless and self._eof.is_set() and self._queue.empty()
+
+    def take(self):
+        """Return (index, frame) for the next frame to process, or None if there is nothing new yet."""
+        if self.lossless:
+            try:
+                return self._queue.get_nowait()
+            except queue.Empty:
                 return None
-            return self._seq, self._index, self._frame
+        with self._lock:
+            if self._frame is None or self._seq == self._taken:
+                return None
+            self._taken = self._seq
+            return self._index, self._frame
 
     def stop(self):
         self._stop.set()
 
     def _run(self):
-        is_file = os.path.isfile(self.door.source)
         cap = cv2.VideoCapture(self.door.source)
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
         started = time.monotonic()
         delay = 1
+        frame_count = 0
         while not self._stop.is_set():
             ok, frame = cap.read()
             if not ok:
                 cap.release()
-                if is_file:
-                    self.ended.set()
+                if self.lossless:
+                    self._eof.set()
                     return
                 log.warning("Camera %s lost, reconnecting in %ss", self.door.name, delay)
                 time.sleep(delay)
@@ -162,15 +182,23 @@ class FrameReader:
                 cap = cv2.VideoCapture(self.door.source)
                 continue
             delay = 1
-            with self._lock:
-                self._frame = frame
-                self._seq += 1
-                if is_file:
-                    self._index += 1  # a file's index is its frame count, so the timeline has no gaps
-                else:
+            if self.lossless:
+                frame_count += 1
+                self._put_blocking((frame_count, frame))
+                time.sleep(1 / self.fps)  # replay at the file's own speed
+            else:
+                with self._lock:
+                    self._frame = frame
+                    self._seq += 1
                     self._index = round((time.monotonic() - started) * self.fps)
-            if is_file:
-                time.sleep(1 / self.fps)
+
+    def _put_blocking(self, item):
+        while not self._stop.is_set():
+            try:
+                self._queue.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
 
 class CarPipeline:
@@ -179,7 +207,6 @@ class CarPipeline:
         self.outbox = outbox
         self.model = model if model is not None else YOLO(config.model_path)
         self._readers = {door.name: FrameReader(door) for door in config.doors}
-        self._last_seq = {door.name: 0 for door in config.doors}
         self._counters = {}
         self._trackers = {}
         self._duplicates = {door.name: DuplicateFilter(iou_threshold=0.5) for door in config.doors}
@@ -189,10 +216,9 @@ class CarPipeline:
         """Run one batched detection over every door that has a new frame. Returns how many doors were processed."""
         ready = []
         for name, reader in self._readers.items():
-            latest = reader.latest(self._last_seq[name])
-            if latest is not None:
-                seq, index, frame = latest
-                self._last_seq[name] = seq
+            taken = reader.take()
+            if taken is not None:
+                index, frame = taken
                 ready.append((name, index, reader.fps, frame))
         if not ready:
             return 0
