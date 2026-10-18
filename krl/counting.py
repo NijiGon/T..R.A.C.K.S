@@ -74,8 +74,9 @@ class LineCounter:
     the track follows it.
 
     When a track ends and a new track starts close to where the old one was (ByteTrack often does
-    this in a crowd), the new track takes over the old track's committed side. Without this, a person
-    who changes ID in the dead zone would be counted as a first sighting and their crossing would be lost.
+    this in a crowd), the new track inherits the old track's committed side, and each old track can be
+    inherited once. Without this, a person who changes ID in the dead zone would be counted as a first
+    sighting and their crossing would be lost.
     """
 
     def __init__(self, line_x, margin, confirm_frames=3, max_jump_px=40, resync_frames=8,
@@ -147,10 +148,14 @@ class LineCounter:
         return None
 
     def _inherit_side(self, frame_no, cx, present):
-        """Find a recently lost track near this position, take its committed side, and forget it."""
+        """Find a recently lost track near this position, and take its committed side.
+
+        A lost track can be inherited once. Its own entry is kept, so if its ID comes back it still knows its
+        side. That matters when a new track steals the side from a track that was only briefly unobserved.
+        """
         best = None
         for old_id, track in self._tracks.items():
-            if track.committed is None or old_id in present:
+            if track.committed is None or track.spare == 0 or old_id in present:
                 continue
             if frame_no - track.last_seen > self.inherit_frames or abs(track.last_cx - cx) > self.inherit_px:
                 continue
@@ -158,9 +163,8 @@ class LineCounter:
                 best = old_id
         if best is None:
             return None
-        committed = self._tracks[best].committed
-        del self._tracks[best]
-        return committed
+        self._tracks[best].spare = 0
+        return self._tracks[best].committed
 
     def _prune(self, frame_no):
         stale = [t for t, track in self._tracks.items() if frame_no - track.last_seen > self.prune_after]
@@ -176,6 +180,7 @@ class _Track:
         self.candidate = None  # side it is currently moving to
         self.run = 0  # consecutive frames on the candidate side
         self.rejected = 0  # consecutive observations rejected as glitches
+        self.spare = 1  # how many new tracks may still inherit this track's side
 
     def accept(self, frame_no, cx, max_jump_px, resync_frames):
         """Return False for a glitch. Keeps the anchor until the track has jumped for resync_frames."""

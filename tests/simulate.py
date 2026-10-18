@@ -89,7 +89,7 @@ def ground_truth(people):
 
 
 def simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px=120, confirm_frames=3,
-             max_jump_px=40, resync_frames=3):
+             max_jump_px=40, resync_frames=3, trace=None):
     rng = random.Random(seed)
     people, next_track, start = [], 1, 0
     for pid in range(cond.people):
@@ -151,6 +151,9 @@ def simulate(cond, seed, margin, inherit_frames, duplicate_iou, inherit_px=120, 
                 tracks.append((dup_id, visible[pid][1]))
 
         ignored = duplicates.ignored(frame, tracks)
+        if trace is not None:
+            trace.setdefault('owner', owner)
+            trace.setdefault('frames', {})[frame] = (tracks, ignored)
         observations = [(tid, (box[0] + box[2]) / 2) for tid, box in tracks if tid not in ignored]
         for track_id, direction in counter.update(frame, observations):
             predicted.append((frame, direction, owner[track_id]))
